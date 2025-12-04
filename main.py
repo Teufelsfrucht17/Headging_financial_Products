@@ -2,64 +2,82 @@
 import numpy as np
 import pandas as pd
 
-# ============================================================
-# CONFIG — EDIT HERE (Exxon Scope 1, Markets, Ratios, Prices)
-# ============================================================
+# ================================
+# CONFIG – Exxon CO2 Hedging Model
+# ================================
 
-# [nicht in PDF] Years to model
-YEARS = list(range(2025, 2031))  # 2025–2030 inclusive
+YEARS = list(range(2025, 2031))  # 2025–2030 inkl.
 
-# [nicht in PDF] Exxon global Scope 1 (tCO2e) — choose your anchors
-# These are *anchors*; the interpolation creates 2025–2030.
+# Globaler Scope-1-Anker (grob basierend auf Exxon-Daten, 2016–2024 Trend & 2030 Ziel)
 SCOPE1_ANCHOR_START_YEAR = 2024
-SCOPE1_ANCHOR_START_T = 91_000_000   # tCO2e (global Scope 1)  [set to your chosen base]
-SCOPE1_ANCHOR_END_YEAR = 2030
-SCOPE1_ANCHOR_END_T = 87_000_000     # tCO2e (global Scope 1)  [set to your chosen target]
+SCOPE1_ANCHOR_START_T    = 103_000_000   # tCO2e global Scope 1 (≈ Exxon 2024, gerundet)
+SCOPE1_ANCHOR_END_YEAR   = 2030
+SCOPE1_ANCHOR_END_T      = 90_000_000    # tCO2e 2030 (modellierte Zielgröße, leichter Rückgang)
 
-# [nicht in PDF] Biggest Exxon markets you want to model (rest can be ignored or kept as "Other")
+# Modellierte größten Märkte
 MARKETS = ["USA", "Canada", "EU_UK"]
 
-# [nicht in PDF] Market share of global Scope 1 (must sum <= 1.0; remainder is "Other" not modeled)
+# Marktanteile an globalen Scope-1-Emissionen (Approx. aus Produktionsanteilen abgeleitet)
 MARKET_SHARE = {
-    "USA": 0.45,
-    "Canada": 0.15,
-    "EU_UK": 0.10,
+    "USA":   0.45,   # ~45 % der Produktion in den USA
+    "Canada":0.20,   # Kanada + weitere Amerika ≈ 20 % für Modell
+    "EU_UK": 0.05,   # EU/UK sehr klein, 5 % als obere Schätzung
 }
-# [nicht in PDF] If you want to explicitly track "Other", set include_other=True below.
+# Rest (~30 %) = „Other“, wird im Modell ignoriert (kein Hedge)
 
-# [nicht in PDF] Coverage ratios: share of Scope 1 that is effectively carbon-priced (ETS/tax)
-# Linear interpolation from 2025 -> 2030 for each market
-COVERAGE_2025 = {"USA": 0.40, "Canada": 0.60, "EU_UK": 0.80}
-COVERAGE_2030 = {"USA": 0.60, "Canada": 0.80, "EU_UK": 0.90}
+# Anteil der Emissionen, die effektiv einem CO2-Preis unterliegen (Coverage)
+# – konservativ, aber an Systemlogik orientiert
+COVERAGE_2025 = {
+    "USA":   0.30,   # nur Teile (Kalifornien, Washington, RGGI)
+    "Canada":0.70,   # föderaler Mindestpreis + Provinzsysteme
+    "EU_UK": 0.90,   # nahezu alle großen Anlagen im ETS/UK ETS
+}
+COVERAGE_2030 = {
+    "USA":   0.50,   # mehr Staaten / stärkere Regulierung angenommen
+    "Canada":0.90,   # fast vollständige Abdeckung der großen Emittenten
+    "EU_UK": 1.00,   # vollständige Abdeckung angenommen
+}
 
-# [nicht in PDF] Carbon price anchors (local currency) per tCO2 (you can keep everything in USD if you want)
-# We'll convert EU/UK to USD using FX below so costs are comparable.
-PRICE_2025 = {"USA": 30.0, "Canada": 60.0, "EU_UK": 60.0}     # USA/Canada in USD, EU_UK in EUR (assumption)
-PRICE_2030 = {"USA": 50.0, "Canada": 130.0, "EU_UK": 125.0}   # USA/Canada in USD, EU_UK in EUR (assumption)
+# CO2-Preisanker 2025/2030 (lokale Währung)
+# USA & Canada hier bereits in USD, EU/UK in EUR (wird unten mit FX in USD umgerechnet)
+PRICE_2025 = {
+    "USA":   30.0,   # USD/t – angenähert an CCA/US-ETS-Größenordnung
+    "Canada":69.0,   # USD/t – aus 95 CAD ≈ 69.38 USD (Bundes-Backstop 2025)  [oai_citation:0‡icapcarbonaction.com](https://icapcarbonaction.com/system/files/ets_pdfs/icap-etsmap-factsheet-135.pdf?utm_source=chatgpt.com)
+    "EU_UK": 80.0,   # EUR/t – in der Nähe aktueller EUA-Dec25-Futures (~78–83 EUR)  [oai_citation:1‡Investing.com](https://www.investing.com/commodities/european-union-allowance-eua-year-futures-historical-data?utm_source=chatgpt.com)
+}
+PRICE_2030 = {
+    "USA":   50.0,   # USD/t – moderates Wachstumsszenario
+    "Canada":124.0,  # USD/t – aus 170 CAD ≈ 124.15 USD (Bundes-Backstop 2030)  [oai_citation:2‡icapcarbonaction.com](https://icapcarbonaction.com/system/files/ets_pdfs/icap-etsmap-factsheet-135.pdf?utm_source=chatgpt.com)
+    "EU_UK": 90.0,   # EUR/t – leicht höheres EUA-Niveau in 2030 (Szenario)
+}
 
-# [nicht in PDF] FX assumptions to convert everything to USD (optional but recommended)
-FX_EURUSD = 1.08  # 1 EUR = 1.08 USD (assumption)
-# If you want EU_UK already in USD, set FX_EURUSD = 1.0
+# FX-Annahme für EUR → USD
+FX_EURUSD = 1.08   # 1 EUR = 1.08 USD (grobe Annahme)
 
-# [nicht in PDF] Futures fixed prices (USD/tCO2). If EU_UK is in EUR, convert here too.
-# You can set these equal to PRICE_2025 * (1 + premium) or use actual quoted futures later.
+# Fixpreise der Futures (Hedge-Preis K) in USD/t
+# – etwas über den 2025-Spots (Risk Premium)
 FUTURES_PRICE_USD = {
-    "USA": 35.0,
-    "Canada": 70.0,
-    "EU_UK": 80.0 * FX_EURUSD,  # converting assumed EUR future to USD
+    "USA":   35.0,                 # USD/t – CO2-Futures auf US-Systeme
+    "Canada":75.0,                 # USD/t – leicht über 2025-Backstop
+    "EU_UK": 85.0 * FX_EURUSD,     # EUR 85 → USD (EUA-Future-Niveau leicht über Spot)
 }
 
-# [nicht in PDF] Price simulation parameters
-N_SIMS = 20_000
-SIGMA = {"USA": 0.20, "Canada": 0.30, "EU_UK": 0.25}  # annual vol assumptions
-RANDOM_SEED = 42
+# Volatilität (annualisierte sigma) pro Markt
+SIGMA = {
+    "USA":   0.20,   # 20 % – US-Carbonpreise (CCA/RGGI) historisch moderat volatil
+    "Canada":0.25,   # 25 % – fragmentierter Markt, etwas höhere Unsicherheit  [oai_citation:3‡clearbluemarkets.com](https://www.clearbluemarkets.com/knowledge-base/navigating-canadas-carbon-markets-ahead-of-the-2026-federal-benchmark-review?utm_source=chatgpt.com)
+    "EU_UK": 0.35,   # 35 % – EUAs historisch ~30–40 % Jahresvola  [oai_citation:4‡Investing.com](https://www.investing.com/commodities/european-union-allowance-eua-year-futures-historical-data?utm_source=chatgpt.com)
+}
 
-# [nicht in PDF] Hedge ratios to test (global sweep; applied equally to all markets)
+# Simulationseinstellungen
+N_SIMS = 20_000     # Anzahl Monte-Carlo-Pfade
+RANDOM_SEED = 42    # Reproduzierbarkeit
+
+# Hedge-Ratios, die du durchsimulierst (global, gleiche Quote für alle Märkte)
 HEDGE_RATIOS_TO_TEST = [0.0, 0.3, 0.5, 0.7, 1.0]
 
-# [nicht in PDF] Include "Other" bucket?
-INCLUDE_OTHER = False  # keep False for "big markets only" approach
-
+# „Other“ nicht explizit modellieren
+INCLUDE_OTHER = False
 # ============================================================
 # HELPERS
 # ============================================================
@@ -259,6 +277,89 @@ def run_hedge_ratio_sweep():
     return df
 
 
+def make_plots(sweep: pd.DataFrame):
+    """Create quick diagnostic plots for hedge ratios."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # Headless friendly backend
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Plots wurden nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        return
+
+    try:
+        plt.style.use("seaborn-v0_8")
+    except OSError:
+        pass  # style not available; continue with default
+
+    hr = sweep["hedge_ratio"]
+    saved = []
+
+    # Erwartete Kosten (Mrd. USD)
+    fig1, ax1 = plt.subplots()
+    ax1.plot(hr, sweep["mean_no_hedge"] / 1e9, marker="o", label="Mean ohne Hedge")
+    ax1.plot(hr, sweep["mean_with_hedge"] / 1e9, marker="o", label="Mean mit Hedge")
+    ax1.set_xlabel("Hedge-Ratio")
+    ax1.set_ylabel("Kosten (Mrd. USD)")
+    ax1.set_title("Erwartete Kosten vs. Hedge-Ratio")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    fig1.tight_layout()
+    fname = "plot_costs_mean.png"
+    fig1.savefig(fname, dpi=150)
+    saved.append(fname)
+    plt.close(fig1)
+
+    # Risiko: 95. Perzentil (Mrd. USD)
+    fig2, ax2 = plt.subplots()
+    ax2.plot(hr, sweep["p95_no_hedge"] / 1e9, marker="o", label="P95 ohne Hedge")
+    ax2.plot(hr, sweep["p95_with_hedge"] / 1e9, marker="o", label="P95 mit Hedge")
+    ax2.set_xlabel("Hedge-Ratio")
+    ax2.set_ylabel("95%-Perzentil Kosten (Mrd. USD)")
+    ax2.set_title("Risiko (P95) vs. Hedge-Ratio")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    fig2.tight_layout()
+    fname = "plot_risk_p95.png"
+    fig2.savefig(fname, dpi=150)
+    saved.append(fname)
+    plt.close(fig2)
+
+    # Erwartete Einsparung (Mrd. USD)
+    fig3, ax3 = plt.subplots()
+    ax3.bar(hr, sweep["mean_saving"] / 1e9, width=0.15)
+    ax3.set_xlabel("Hedge-Ratio")
+    ax3.set_ylabel("Erwartete Einsparung (Mrd. USD)")
+    ax3.set_title("Einsparung durch Hedge vs. Hedge-Ratio")
+    ax3.grid(True, axis="y", alpha=0.3)
+    fig3.tight_layout()
+    fname = "plot_savings.png"
+    fig3.savefig(fname, dpi=150)
+    saved.append(fname)
+    plt.close(fig3)
+
+    # Risk-Return (Std vs. Mean) für Hedged-Kosten
+    fig4, ax4 = plt.subplots()
+    x_std = sweep["std_with_hedge"] / 1e9
+    y_mean = sweep["mean_with_hedge"] / 1e9
+    scatter = ax4.scatter(x_std, y_mean, c=hr, cmap="viridis", s=80)
+    for i, ratio in enumerate(hr):
+        ax4.annotate(f"{ratio:.1f}", (x_std.iloc[i], y_mean.iloc[i]), textcoords="offset points", xytext=(4, 4), fontsize=8)
+    cbar = fig4.colorbar(scatter, ax=ax4)
+    cbar.set_label("Hedge-Ratio")
+    ax4.set_xlabel("Std dev Kosten (Mrd. USD)")
+    ax4.set_ylabel("Erwartete Kosten (Mrd. USD)")
+    ax4.set_title("Risk-Return der Hedge-Ratios")
+    ax4.grid(True, alpha=0.3)
+    fig4.tight_layout()
+    fname = "plot_risk_return.png"
+    fig4.savefig(fname, dpi=150)
+    saved.append(fname)
+    plt.close(fig4)
+
+    print("Plots gespeichert:", ", ".join(saved))
+
+
 # ============================================================
 # RUN
 # ============================================================
@@ -277,8 +378,23 @@ if __name__ == "__main__":
     ]])
 
     output_path = "hedge_ratio_sweep.xlsx"
+    output_path_csv = "hedge_ratio_sweep.csv"
     try:
-        sweep.to_excel(output_path, index=False)
-        print(f"\nExcel export written to {output_path}")
+        excel_written = False
+        try:
+            sweep.to_excel(output_path, index=False, decimal=",")
+            excel_written = True
+        except TypeError:
+            sweep.to_excel(output_path, index=False)
+            excel_written = True
+            print("Hinweis: pandas-Version unterstützt decimal=',' nicht; Excel nutzt Dezimalpunkt '.'.")
+
+        sweep.to_csv(output_path_csv, index=False, sep=";", decimal=",", float_format="%.2f")
+
+        if excel_written:
+            print(f"\nExcel export written to {output_path}")
+        print(f"Simpler CSV export written to {output_path_csv} (separator=';', decimal=',')")
     except ImportError as exc:
         print(f"\nCould not export to Excel ({exc}). Install openpyxl or xlsxwriter to enable Excel export.")
+
+    make_plots(sweep)
