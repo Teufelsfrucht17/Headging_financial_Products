@@ -8,72 +8,80 @@ import pandas as pd
 
 YEARS = list(range(2025, 2031))  # 2025–2030 inkl.
 
-# Globaler Scope-1-Anker (grob basierend auf Exxon-Daten, 2016–2024 Trend & 2030 Ziel)
+# Globaler Scope-1-Anker (ExxonMobil 2024 Reported approx.)
 SCOPE1_ANCHOR_START_YEAR = 2024
-SCOPE1_ANCHOR_START_T    = 103_000_000   # tCO2e global Scope 1 (≈ Exxon 2024, gerundet)
+SCOPE1_ANCHOR_START_T    = 103_000_000   # tCO2e global Scope 1
 SCOPE1_ANCHOR_END_YEAR   = 2030
-SCOPE1_ANCHOR_END_T      = 90_000_000    # tCO2e 2030 (modellierte Zielgröße, leichter Rückgang)
+SCOPE1_ANCHOR_END_T      = 90_000_000    # Zielgröße durch Divestments (Gravenchon etc.)
 
-# Modellierte größten Märkte
+# Modellierte Märkte
 MARKETS = ["USA", "Canada", "EU_UK"]
 
-# Marktanteile an globalen Scope-1-Emissionen (Approx. aus Produktionsanteilen abgeleitet)
+# Marktanteile an globalen Scope-1-Emissionen (Brutto-Emissionen vor Regulierung)
+# Kanada ist hoch durch Ölsande (Imperial Oil), EU sinkt durch Verkäufe.
 MARKET_SHARE = {
-    "USA":   0.45,   # ~45 % der Produktion in den USA
-    "Canada":0.20,   # Kanada + weitere Amerika ≈ 20 % für Modell
-    "EU_UK": 0.05,   # EU/UK sehr klein, 5 % als obere Schätzung
+    "USA":    0.45,   # ~46 Mio t (Permian, Gulf Coast Refining)
+    "Canada": 0.25,   # ~25 Mio t (Kearl, Cold Lake - hohe Intensität)
+    "EU_UK":  0.10,   # ~10 Mio t (Rotterdam, Antwerp, Fife)
 }
-    # Rest (~30 %) = „Other“, wird im Modell ignoriert (kein Hedge)
-# Anteil der Emissionen, die effektiv einem CO2-Preis unterliegen (Coverage)
-# – konservativ, aber an Systemlogik orientiert
+    # Rest (20%) = Asien/LNG/Other (nicht bepreist)
+
+# "Effective Coverage": Wie viel % der Emissionen müssen tatsächlich bezahlt werden?
+# WICHTIG: In Kanada (TIER) zahlt man nur für Emissionen ÜBER dem Benchmark.
+# Daher ist die "Coverage" hier mathematisch niedrig (~15%), um das Netto-Exposure (~3.3Mt) abzubilden.
 COVERAGE_2025 = {
-    "USA":   0.30,   # nur Teile (Kalifornien, Washington, RGGI)
-    "Canada":0.70,   # föderaler Mindestpreis + Provinzsysteme
-    "EU_UK": 0.90,   # nahezu alle großen Anlagen im ETS/UK ETS
+    "USA":    0.03,   # Nur CA/WA Assets zahlen voll (~1.5 Mt Netto-Exposure)
+    "Canada": 0.15,   # TIER-System: Nur marginale Emissionen über Benchmark sind steuerpflichtig
+    "EU_UK":  0.40,   # EU ETS: Freie Zuteilung deckt noch ~60%, Tendenz fallend
 }
+
 COVERAGE_2030 = {
-    "USA":   0.50,   # mehr Staaten / stärkere Regulierung angenommen
-    "Canada":0.90,   # fast vollständige Abdeckung der großen Emittenten
-    "EU_UK": 1.00,   # vollständige Abdeckung angenommen
+    "USA":    0.05,   # Leichter Anstieg (mögliche neue US-Staaten)
+    "Canada": 0.20,   # Benchmarks werden strenger (2-4% Tightening p.a.) -> mehr steuerbar
+    "EU_UK":  0.60,   # CBAM Phase-in: Freie Zuteilungen fallen weg -> Exposure steigt massiv
 }
 
-# CO2-Preisanker 2025/2030 (lokale Währung)
-# USA & Canada hier bereits in USD, EU/UK in EUR (wird unten mit FX in USD umgerechnet)
+# Währungsannahmen
+FX_EURUSD = 1.05
+FX_CADUSD = 0.71
+
+# Spot-Preisanker (Prognosen für Drift-Berechnung)
+# USA/Canada in USD umgerechnet, EU in EUR (wird unten konvertiert)
 PRICE_2025 = {
-    "USA":   30.0,   # USD/t – angenähert an CCA/US-ETS-Größenordnung
-    "Canada":69.0,   # USD/t – aus 95 CAD ≈ 69.38 USD (Bundes-Backstop 2025)  [oai_citation:0‡icapcarbonaction.com](https://icapcarbonaction.com/system/files/ets_pdfs/icap-etsmap-factsheet-135.pdf?utm_source=chatgpt.com)
-    "EU_UK": 80.0,   # EUR/t – in der Nähe aktueller EUA-Dec25-Futures (~78–83 EUR)  [oai_citation:1‡Investing.com](https://www.investing.com/commodities/european-union-allowance-eua-year-futures-historical-data?utm_source=chatgpt.com)
+    "USA":    32.50,  # USD (California/WCI Auction)
+    "Canada": 67.50,  # USD (~95 CAD TIER Fund Price - Frozen status)
+    "EU_UK":  81.50,  # EUR (Aktueller Spot Dec25)
 }
+
+# Risiko-Szenario Preise 2030 (Hier nehmen wir den "Bull Case" der Analysten an)
+# Damit simulieren wir das Risiko, gegen das wir hedgen wollen.
 PRICE_2030 = {
-    "USA":   50.0,   # USD/t – moderates Wachstumsszenario
-    "Canada":124.0,  # USD/t – aus 170 CAD ≈ 124.15 USD (Bundes-Backstop 2030)  [oai_citation:2‡icapcarbonaction.com](https://icapcarbonaction.com/system/files/ets_pdfs/icap-etsmap-factsheet-135.pdf?utm_source=chatgpt.com)
-    "EU_UK": 90.0,   # EUR/t – leicht höheres EUA-Niveau in 2030 (Szenario)
+    "USA":    90.00,  # USD (Verschärfung CA/WA Programme)
+    "Canada": 120.00, # USD (~170 CAD Federal Backstop - falls Freeze endet)
+    "EU_UK":  149.00, # EUR (BloombergNEF Prognose "Fit for 55")
 }
 
-# FX-Annahme für EUR → USD
-FX_EURUSD = 1.08   # 1 EUR = 1.08 USD (grobe Annahme)
-
-# Fixpreise der Futures (Hedge-Preis K) in USD/t
-# – etwas über den 2025-Spots (Risk Premium)
+# Hedge-Preis (K): Was zahlen wir HEUTE für den 2030 Future/Option Strike?
+# EU: Liquid am Markt handelbar (Contango). Kanada/USA: Schätzung basierend auf Forward-Kurven/CCS-Kosten.
 FUTURES_PRICE_USD = {
-    "USA":   35.0,                 # USD/t – CO2-Futures auf US-Systeme
-    "Canada":75.0,                 # USD/t – leicht über 2025-Backstop
-    "EU_UK": 85.0 * FX_EURUSD,     # EUR 85 → USD (EUA-Future-Niveau leicht über Spot)
+    "USA":    60.00,             # USD (Impliziter Forward Preis)
+    "Canada": 71.00,             # USD (~100 CAD - CCS Breakeven als "Physical Hedge")
+    "EU_UK":  97.00 * FX_EURUSD, # EUR 97 (ICE Endex Dec 30 Future) in USD
 }
 
-# Volatilität (annualisierte sigma) pro Markt
+# Volatilität (Sigma)
 SIGMA = {
-    "USA":   0.20,   # 20 % – US-Carbonpreise (CCA/RGGI) historisch moderat volatil
-    "Canada":0.25,   # 25 % – fragmentierter Markt, etwas höhere Unsicherheit  [oai_citation:3‡clearbluemarkets.com](https://www.clearbluemarkets.com/knowledge-base/navigating-canadas-carbon-markets-ahead-of-the-2026-federal-benchmark-review?utm_source=chatgpt.com)
-    "EU_UK": 0.35,   # 35 % – EUAs historisch ~30–40 % Jahresvola  [oai_citation:4‡Investing.com](https://www.investing.com/commodities/european-union-allowance-eua-year-futures-historical-data?utm_source=chatgpt.com)
+    "USA":    0.20,  # Floor-Price Mechanismus dämpft Vola
+    "Canada": 0.30,  # Hohe politische Unsicherheit (Wahl Poilievre vs. Trudeau)
+    "EU_UK":  0.35,  # Hohe Vola durch MSR-Eingriffe und Gas-Preise
 }
 
 # Simulationseinstellungen
-N_SIMS = 20_000     # Anzahl Monte-Carlo-Pfade
-RANDOM_SEED = 42    # Reproduzierbarkeit
+N_SIMS = 20_000
+RANDOM_SEED = 42
 
 # Hedge-Ratios, die du durchsimulierst (global, gleiche Quote für alle Märkte)
-HEDGE_RATIOS_TO_TEST = [0.0, 0.3, 0.5, 0.7, 1.0]
+HEDGE_RATIOS_TO_TEST = [0.0, 0.25, 0.50, 0.75, 1.0]  # Exxon spezifische Schritte
 
 # „Other“ nicht explizit modellieren
 INCLUDE_OTHER = False
