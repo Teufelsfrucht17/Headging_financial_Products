@@ -1,4 +1,4 @@
-# [nicht in PDF]
+# [not in PDF]
 import numpy as np
 import pandas as pd
 
@@ -6,90 +6,96 @@ import pandas as pd
 # CONFIG – Exxon CO2 Hedging Model
 # ================================
 
-YEARS = list(range(2025, 2031))  # 2025–2030 inkl.
+YEARS = list(range(2025, 2031))  # 2025–2030 inclusive
 
-# Globaler Scope-1-Anker (ExxonMobil 2024 Reported approx.)
+# Global Scope-1 anchor (ExxonMobil 2024 reported approx.)
 SCOPE1_ANCHOR_START_YEAR = 2024
-SCOPE1_ANCHOR_START_T    = 103_000_000   # tCO2e global Scope 1
+SCOPE1_ANCHOR_START_T    = 99_000_000   # tCO2e global Scope 1
 SCOPE1_ANCHOR_END_YEAR   = 2030
-SCOPE1_ANCHOR_END_T      = 90_000_000    # Zielgröße durch Divestments (Gravenchon etc.)
+SCOPE1_ANCHOR_END_T      = 82_000_000    # Target level after divestments (Gravenchon etc.)
 
-# Modellierte Märkte
+# Modeled markets
 MARKETS = ["USA", "Canada", "EU_UK"]
 
-# Marktanteile an globalen Scope-1-Emissionen (Brutto-Emissionen vor Regulierung)
-# Kanada ist hoch durch Ölsande (Imperial Oil), EU sinkt durch Verkäufe.
+# Market shares of global Scope-1 emissions (gross emissions before regulation)
+# Canada is high due to oil sands (Imperial Oil), EU share declines due to divestments.
 MARKET_SHARE = {
-    "USA":    0.45,   # ~46 Mio t (Permian, Gulf Coast Refining)
-    "Canada": 0.25,   # ~25 Mio t (Kearl, Cold Lake - hohe Intensität)
-    "EU_UK":  0.10,   # ~10 Mio t (Rotterdam, Antwerp, Fife)
+    "USA":    0.20,  # ~36% der globalen Scope-1 Emissionen (Permian, Gulf Coast Refining)
+    "Canada": 0.34,  # ~22% (Kearl, Cold Lake – hohe Intensität)
+    "EU_UK":  0.26,  # ~17% (Fife, Antwerpen, UK/EU Raffinerien nach Gravenchon-Divestment)
 }
-    # Rest (20%) = Asien/LNG/Other (nicht bepreist)
+# Rest (~25%) = Asia/LNG/Other (nicht explizit im Modell, CO2-Kosten ~0 in der Logik hier)
 
-# "Effective Coverage": Wie viel % der Emissionen müssen tatsächlich bezahlt werden?
-# WICHTIG: In Kanada (TIER) zahlt man nur für Emissionen ÜBER dem Benchmark.
-# Daher ist die "Coverage" hier mathematisch niedrig (~15%), um das Netto-Exposure (~3.3Mt) abzubilden.
+# "Effective Coverage": Welcher Prozentsatz der Emissionen fällt effektiv unter ein CO2-Preissystem?
+# 2025 eher konservativ: noch viele Free Allowances / Benchmarks, Coverage steigt dann bis 2030 deutlich an.
+
 COVERAGE_2025 = {
-    "USA":    0.03,   # Nur CA/WA Assets zahlen voll (~1.5 Mt Netto-Exposure)
-    "Canada": 0.15,   # TIER-System: Nur marginale Emissionen über Benchmark sind steuerpflichtig
-    "EU_UK":  0.40,   # EU ETS: Freie Zuteilung deckt noch ~60%, Tendenz fallend
+    "USA":    0.25,  # v.a. CA/WA + einzelne Programme, kein bundesweiter Carbon Price
+    "Canada": 0.55,  # TIER/OBPS: signifikanter Teil über Benchmark, aber noch nicht "voll durchgereicht"
+    "EU_UK":  0.65,  # ETS schon relativ "tight", aber noch Free Allocation
 }
 
+# 2030: "Risk / Bull Case" für CO2-Exposure:
+# - USA: mehr Staaten + evtl. verschärfte Regionalprogramme -> höherer Anteil bepreist
+# - Canada: Benchmarks strenger, mehr Volumen > Benchmark -> deutlich mehr taxable Volume
+# - EU_UK: Free Allocation fast weg, CBAM voll ausgerollt -> Großteil der Emissionen preiswirksam
 COVERAGE_2030 = {
-    "USA":    0.05,   # Leichter Anstieg (mögliche neue US-Staaten)
-    "Canada": 0.20,   # Benchmarks werden strenger (2-4% Tightening p.a.) -> mehr steuerbar
-    "EU_UK":  0.60,   # CBAM Phase-in: Freie Zuteilungen fallen weg -> Exposure steigt massiv
+    "USA":    0.50,  # ≈ 25% der US-Emissionen effektiv bepreist
+    "Canada": 0.90,  # ≈ 66% der kanadischen Emissionen oberhalb Benchmark / voll im Pricing
+    "EU_UK":  0.80,  # ≈ 85% der EU+UK-Emissionen unter ETS/UK ETS ohne nennenswerte Free Allocation
 }
 
-# Währungsannahmen
+
+# Currency assumptions
 FX_EURUSD = 1.05
 FX_CADUSD = 0.71
 
-# Spot-Preisanker (Prognosen für Drift-Berechnung)
-# USA/Canada in USD umgerechnet, EU in EUR (wird unten konvertiert)
+# Spot price anchors (forecasts for drift calculation)
+# USA/Canada converted into USD, EU in EUR (converted below)
 PRICE_2025 = {
-    "USA":    32.50,  # USD (California/WCI Auction)
-    "Canada": 67.50,  # USD (~95 CAD TIER Fund Price - Frozen status)
-    "EU_UK":  81.50,  # EUR (Aktueller Spot Dec25)
+    "USA":    32.5,   # USD/t – Kalifornien / WCI Auktionen + RGGI (heute ~20–30 USD)
+    "Canada": 67.5,   # USD/t – ~95 CAD/t TIER/OBPS Pfad (eingefrorener Korridor)
+    "EU_UK":  81.5,   # EUR/t – in etwa aktuelles Dec25 EUA-Niveau
 }
 
-# Risiko-Szenario Preise 2030 (Hier nehmen wir den "Bull Case" der Analysten an)
-# Damit simulieren wir das Risiko, gegen das wir hedgen wollen.
+# Risk-scenario prices 2030 (bullish, aber noch im Rahmen der Studien/PDF)
+# -> das ist das Szenario, GEGEN das wir hedgen wollen.
 PRICE_2030 = {
-    "USA":    90.00,  # USD (Verschärfung CA/WA Programme)
-    "Canada": 120.00, # USD (~170 CAD Federal Backstop - falls Freeze endet)
-    "EU_UK":  149.00, # EUR (BloombergNEF Prognose "Fit for 55")
+    "USA":    55.0,   # USD/t – Oberes Ende 40–55 USD für CA ETS / RGGI
+    "Canada": 90.0,   # USD/t – über dem risk-adjusted Mean (~85), unterhalb 170 CAD Pfad
+    "EU_UK":  105.0,  # EUR/t – oberes Drittel der 75–105 EUR ETS-Projektionen
 }
 
-# Hedge-Preis (K): Was zahlen wir HEUTE für den 2030 Future/Option Strike?
-# EU: Liquid am Markt handelbar (Contango). Kanada/USA: Schätzung basierend auf Forward-Kurven/CCS-Kosten.
+# Hedge price (K): what Exxon would effectively lock in TODAY for 2030
+# EU: basiert grob auf Dec30-EUA-Futures (unterhalb Risk-Szenario),
+# Canada/USA: abgeschätzt als moderat unterhalb des 2030-Riskszenarios.
 FUTURES_PRICE_USD = {
-    "USA":    60.00,             # USD (Impliziter Forward Preis)
-    "Canada": 71.00,             # USD (~100 CAD - CCS Breakeven als "Physical Hedge")
-    "EU_UK":  97.00 * FX_EURUSD, # EUR 97 (ICE Endex Dec 30 Future) in USD
+    "USA":    45.0,              # USD/t – Forward unterhalb 55 USD Risk-Szenario
+    "Canada": 75.0,              # USD/t – Forward etwas unter 90 USD Erwartung
+    "EU_UK":  90.0 * FX_EURUSD,  # EUR 90 Dec30-Future (ca. Mitte der Terminkurve) in USD
 }
 
-# Volatilität (Sigma)
+# Volatility (sigma)
 SIGMA = {
-    "USA":    0.20,  # Floor-Price Mechanismus dämpft Vola
-    "Canada": 0.30,  # Hohe politische Unsicherheit (Wahl Poilievre vs. Trudeau)
-    "EU_UK":  0.35,  # Hohe Vola durch MSR-Eingriffe und Gas-Preise
+    "USA":    0.20,  # Floor-price mechanism dampens volatility
+    "Canada": 0.30,  # High political uncertainty (Poilievre vs. Trudeau election)
+    "EU_UK":  0.35,  # High volatility due to MSR interventions and gas prices
 }
 
-# Simulationseinstellungen
+# Simulation settings
 N_SIMS = 20_000
 RANDOM_SEED = 42
 
-# Hedge-Ratios, die du durchsimulierst (global, gleiche Quote für alle Märkte)
-HEDGE_RATIOS_TO_TEST = [0.0, 0.25, 0.50, 0.75, 1.0]  # Exxon spezifische Schritte
+# Hedge ratios you simulate (global, same proportion for all markets)
+HEDGE_RATIOS_TO_TEST = [0.0, 0.25, 0.50, 0.75, 1.0]  # Exxon-specific steps
 
-# „Other“ nicht explizit modellieren
+# "Other" not modeled explicitly
 INCLUDE_OTHER = False
 # ============================================================
 # HELPERS
 # ============================================================
 
-# [nicht in PDF]
+# [not in PDF]
 def linear_interp(years, x0_year, x0_value, x1_year, x1_value) -> dict:
     """Linear interpolation for yearly series."""
     years = list(years)
@@ -99,7 +105,7 @@ def linear_interp(years, x0_year, x0_value, x1_year, x1_value) -> dict:
         out[y] = (1 - w) * x0_value + w * x1_value
     return out
 
-# [nicht in PDF]
+# [not in PDF]
 def build_scope1_global(years) -> dict:
     """Build global Scope 1 series for modeled years."""
     return linear_interp(
@@ -108,7 +114,7 @@ def build_scope1_global(years) -> dict:
         SCOPE1_ANCHOR_END_YEAR, SCOPE1_ANCHOR_END_T
     )
 
-# [nicht in PDF]
+# [not in PDF]
 def build_scope1_by_market(scope1_global: dict, include_other=False) -> dict:
     """Allocate global Scope 1 to markets via market shares."""
     shares_sum = sum(MARKET_SHARE.values())
@@ -126,7 +132,7 @@ def build_scope1_by_market(scope1_global: dict, include_other=False) -> dict:
 
     return scope1_market
 
-# [nicht in PDF]
+# [not in PDF]
 def build_coverage(years) -> dict:
     """Coverage ratio per year and market (linear 2025->2030)."""
     cov = {y: {} for y in years}
@@ -136,21 +142,21 @@ def build_coverage(years) -> dict:
             cov[y][m] = float(series[y])
     return cov
 
-# [nicht in PDF]
+# [not in PDF]
 def to_usd_price(market: str, price_local: float) -> float:
     """Convert EU_UK EUR price into USD; USA/Canada assumed already USD."""
     if market == "EU_UK":
         return price_local * FX_EURUSD
     return price_local
 
-# [nicht in PDF]
+# [not in PDF]
 def build_price_anchors_usd() -> tuple[dict, dict]:
     """Convert 2025 and 2030 anchor prices into USD per market."""
     p25 = {m: to_usd_price(m, PRICE_2025[m]) for m in MARKETS}
     p30 = {m: to_usd_price(m, PRICE_2030[m]) for m in MARKETS}
     return p25, p30
 
-# [nicht in PDF]
+# [not in PDF]
 def simulate_prices_gbm_targeted(years, n_sims, p0_usd, pT_usd, sigma, seed=42) -> dict:
     """
     Simulate GBM price paths with drift chosen to hit pT in expectation.
@@ -186,7 +192,7 @@ def simulate_prices_gbm_targeted(years, n_sims, p0_usd, pT_usd, sigma, seed=42) 
 
     return prices
 
-# [nicht in PDF]
+# [not in PDF]
 def compute_costs(prices_usd, scope1_by_market, coverage_by_year, hedge_ratio, futures_price_usd) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns (total_cost_no_hedge, total_cost_with_hedge) for all sims.
@@ -274,7 +280,7 @@ def compute_mean_cost_by_market_per_year(prices_usd, scope1_by_market, coverage_
 
     return years, mean_no, mean_hedged
 
-# [nicht in PDF]
+# [not in PDF]
 def summarize_costs(no_hedge, with_hedge) -> dict:
     """Return summary metrics."""
     saving = no_hedge - with_hedge
@@ -290,7 +296,7 @@ def summarize_costs(no_hedge, with_hedge) -> dict:
         "p05_with_hedge": float(np.quantile(with_hedge, 0.05)),
     }
 
-# [nicht in PDF]
+# [not in PDF]
 def run_hedge_ratio_sweep():
     # Build emissions & coverage
     scope1_global = build_scope1_global(YEARS)
@@ -349,7 +355,7 @@ def make_plots(sweep: pd.DataFrame):
         matplotlib.use("Agg")  # Headless friendly backend
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Plots wurden nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("Plots were not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -360,13 +366,13 @@ def make_plots(sweep: pd.DataFrame):
     hr = sweep["hedge_ratio"]
     saved = []
 
-    # Erwartete Kosten (Mrd. USD)
+    # Expected costs (bn USD)
     fig1, ax1 = plt.subplots()
-    ax1.plot(hr, sweep["mean_no_hedge"] / 1e9, marker="o", label="Mean ohne Hedge")
-    ax1.plot(hr, sweep["mean_with_hedge"] / 1e9, marker="o", label="Mean mit Hedge")
-    ax1.set_xlabel("Hedge-Ratio")
-    ax1.set_ylabel("Kosten (Mrd. USD)")
-    ax1.set_title("Erwartete Kosten vs. Hedge-Ratio")
+    ax1.plot(hr, sweep["mean_no_hedge"] / 1e9, marker="o", label="Mean without hedge")
+    ax1.plot(hr, sweep["mean_with_hedge"] / 1e9, marker="o", label="Mean with hedge")
+    ax1.set_xlabel("Hedge ratio")
+    ax1.set_ylabel("Costs (bn USD)")
+    ax1.set_title("Expected costs vs. hedge ratio")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     fig1.tight_layout()
@@ -375,13 +381,13 @@ def make_plots(sweep: pd.DataFrame):
     saved.append(fname)
     plt.close(fig1)
 
-    # Risiko: 95. Perzentil (Mrd. USD)
+    # Risk: 95th percentile (bn USD)
     fig2, ax2 = plt.subplots()
-    ax2.plot(hr, sweep["p95_no_hedge"] / 1e9, marker="o", label="P95 ohne Hedge")
-    ax2.plot(hr, sweep["p95_with_hedge"] / 1e9, marker="o", label="P95 mit Hedge")
-    ax2.set_xlabel("Hedge-Ratio")
-    ax2.set_ylabel("95%-Perzentil Kosten (Mrd. USD)")
-    ax2.set_title("Risiko (P95) vs. Hedge-Ratio")
+    ax2.plot(hr, sweep["p95_no_hedge"] / 1e9, marker="o", label="P95 without hedge")
+    ax2.plot(hr, sweep["p95_with_hedge"] / 1e9, marker="o", label="P95 with hedge")
+    ax2.set_xlabel("Hedge ratio")
+    ax2.set_ylabel("95th percentile of costs (bn USD)")
+    ax2.set_title("Risk (P95) vs. hedge ratio")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     fig2.tight_layout()
@@ -390,12 +396,12 @@ def make_plots(sweep: pd.DataFrame):
     saved.append(fname)
     plt.close(fig2)
 
-    # Erwartete Einsparung (Mrd. USD)
+    # Expected savings (bn USD)
     fig3, ax3 = plt.subplots()
     ax3.bar(hr, sweep["mean_saving"] / 1e9, width=0.15)
-    ax3.set_xlabel("Hedge-Ratio")
-    ax3.set_ylabel("Erwartete Einsparung (Mrd. USD)")
-    ax3.set_title("Einsparung durch Hedge vs. Hedge-Ratio")
+    ax3.set_xlabel("Hedge ratio")
+    ax3.set_ylabel("Expected savings (bn USD)")
+    ax3.set_title("Savings from hedge vs. hedge ratio")
     ax3.grid(True, axis="y", alpha=0.3)
     fig3.tight_layout()
     fname = "plot_savings.png"
@@ -403,7 +409,7 @@ def make_plots(sweep: pd.DataFrame):
     saved.append(fname)
     plt.close(fig3)
 
-    # Risk-Return (Std vs. Mean) für Hedged-Kosten
+    # Risk-return (std vs. mean) for hedged costs
     fig4, ax4 = plt.subplots()
     x_std = sweep["std_with_hedge"] / 1e9
     y_mean = sweep["mean_with_hedge"] / 1e9
@@ -411,10 +417,10 @@ def make_plots(sweep: pd.DataFrame):
     for i, ratio in enumerate(hr):
         ax4.annotate(f"{ratio:.1f}", (x_std.iloc[i], y_mean.iloc[i]), textcoords="offset points", xytext=(4, 4), fontsize=8)
     cbar = fig4.colorbar(scatter, ax=ax4)
-    cbar.set_label("Hedge-Ratio")
-    ax4.set_xlabel("Std dev Kosten (Mrd. USD)")
-    ax4.set_ylabel("Erwartete Kosten (Mrd. USD)")
-    ax4.set_title("Risk-Return der Hedge-Ratios")
+    cbar.set_label("Hedge ratio")
+    ax4.set_xlabel("Std dev of costs (bn USD)")
+    ax4.set_ylabel("Expected costs (bn USD)")
+    ax4.set_title("Risk-return of hedge ratios")
     ax4.grid(True, alpha=0.3)
     fig4.tight_layout()
     fname = "plot_risk_return.png"
@@ -422,17 +428,17 @@ def make_plots(sweep: pd.DataFrame):
     saved.append(fname)
     plt.close(fig4)
 
-    print("Plots gespeichert:", ", ".join(saved))
+    print("Plots saved:", ", ".join(saved))
 
 
 def make_tradeoff_plot(sweep: pd.DataFrame):
-    """Plot Trade-off: Risikoreduktion (P95-Reduktion) vs. erwartete Mehrkosten."""
+    """Plot trade-off: risk reduction (P95 reduction) vs. expected additional cost."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Trade-off-Plot wurde nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("Trade-off plot was not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -443,7 +449,7 @@ def make_tradeoff_plot(sweep: pd.DataFrame):
     sweep_sorted = sweep.sort_values("hedge_ratio")
     hr = sweep_sorted["hedge_ratio"]
 
-    # Risikoreduktion (P95-Reduktion) und erwartete Mehrkosten durch Hedge in Mrd. USD
+    # Risk reduction (P95 reduction) and expected additional cost from hedging in bn USD
     risk_reduction = sweep_sorted["p95_reduction"] / 1e9
     mean_delta = (sweep_sorted["mean_with_hedge"] - sweep_sorted["mean_no_hedge"]) / 1e9
 
@@ -460,30 +466,30 @@ def make_tradeoff_plot(sweep: pd.DataFrame):
         )
 
     ax.axhline(0, color="grey", linewidth=1, linestyle="--")
-    ax.set_xlabel("Risikoreduktion P95 (Mrd. USD)")
-    ax.set_ylabel("Erwartete Mehrkosten durch Hedge (Mrd. USD)")
-    ax.set_title("Trade-off: Risikoreduktion vs. erwartete Mehrkosten des Hedges")
+    ax.set_xlabel("Risk reduction P95 (bn USD)")
+    ax.set_ylabel("Expected additional cost from hedging (bn USD)")
+    ax.set_title("Trade-off: risk reduction vs. expected additional cost of the hedge")
     ax.grid(True, alpha=0.3)
 
     cbar = fig.colorbar(scatter, ax=ax)
-    cbar.set_label("Hedge-Ratio")
+    cbar.set_label("Hedge ratio")
 
     fig.tight_layout()
     fname = "plot_tradeoff_risk_vs_cost.png"
     fig.savefig(fname, dpi=150)
     plt.close(fig)
 
-    print("Trade-off-Plot gespeichert:", fname)
+    print("Trade-off plot saved:", fname)
 
 
 def make_var_plot(hedge_ratio_for_plot: float = 0.7):
-    """VaR-Histogramm mit überlagerter Normalverteilung, ohne und mit Hedge."""
+    """VaR histogram with overlaid normal distribution, without and with hedge."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("VaR-Plot wurde nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("VaR plot was not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -532,39 +538,39 @@ def make_var_plot(hedge_ratio_for_plot: float = 0.7):
         if sigma > 0:
             x = np.linspace(mu - 4 * sigma, mu + 4 * sigma, 400)
             pdf = (1.0 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-            ax.plot(x, pdf, color="tab:orange", label="Normal (gleiches μ, σ)")
+            ax.plot(x, pdf, color="tab:orange", label="Normal (same μ, σ)")
 
         ax.axvline(mu, color="black", linestyle="--", label=f"Mean ≈ {mu:.1f}")
         ax.axvline(var95, color="red", linestyle=":", label=f"P95 / VaR 95% ≈ {var95:.1f}")
 
-        ax.set_xlabel("Gesamte CO2-Kosten 2025–2030 (Mrd. USD)")
-        ax.set_ylabel("Dichte")
+        ax.set_xlabel("Total CO2 costs 2025–2030 (bn USD)")
+        ax.set_ylabel("Density")
         ax.set_title(title)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
-    _plot_var(ax1, no_hedge, "Ohne Hedge – VaR 95%")
-    _plot_var(ax2, hedged, f"Mit Hedge (HR={hedge_ratio_for_plot:.1f}) – VaR 95%")
+    _plot_var(ax1, no_hedge, "Without hedge – VaR 95%")
+    _plot_var(ax2, hedged, f"With hedge (HR={hedge_ratio_for_plot:.1f}) – VaR 95%")
 
-    fig.suptitle("Verteilung der Gesamtkosten 2025–2030\nmit VaR 95% und Normalapproximation", fontsize=10)
+    fig.suptitle("Distribution of total costs 2025–2030\nwith 95% VaR and normal approximation", fontsize=10)
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
     fname = f"plot_var_hist_normal_hr{hedge_ratio_for_plot:.1f}.png".replace('.', '_')
     fig.savefig(fname, dpi=150)
     plt.close(fig)
 
-    print("VaR-Plot gespeichert:", fname)
+    print("VaR plot saved:", fname)
 
 
 def make_market_timeseries_plots(hedge_ratio_for_plot: float = 0.7):
-    """Zeitreihen der erwarteten jährlichen CO2-Kosten nach Märkten."""
+    """Time series of expected annual CO2 costs by market."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Market-Zeitreihen-Plots wurden nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("Market time-series plots were not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -608,15 +614,15 @@ def make_market_timeseries_plots(hedge_ratio_for_plot: float = 0.7):
         "EU_UK": "tab:green",
     }
 
-    # Ohne Hedge – gestapelte Flächen nach Märkten
+    # Without hedge – stacked areas by market
     fig1, ax1 = plt.subplots()
     data_no = [mean_no_by_market[m] / 1e9 for m in MARKETS]
-    labels_no = ["USA", "Kanada", "EU/UK"]
+    labels_no = ["USA", "Canada", "EU/UK"]
     colors_no = [colors[m] for m in MARKETS]
     ax1.stackplot(years, data_no, labels=labels_no, colors=colors_no, alpha=0.8)
-    ax1.set_xlabel("Jahr")
-    ax1.set_ylabel("Jährliche CO2-Kosten (Mrd. USD)")
-    ax1.set_title("Erwartete jährliche CO2-Kosten ohne Hedge – nach Märkten")
+    ax1.set_xlabel("Year")
+    ax1.set_ylabel("Annual CO2 costs (bn USD)")
+    ax1.set_title("Expected annual CO2 costs without hedge – by market")
     ax1.legend(loc="upper left")
     ax1.grid(True, alpha=0.3)
     fig1.tight_layout()
@@ -624,15 +630,15 @@ def make_market_timeseries_plots(hedge_ratio_for_plot: float = 0.7):
     fig1.savefig(fname1, dpi=150)
     plt.close(fig1)
 
-    # Mit Hedge – gestapelte Flächen nach Märkten
+    # With hedge – stacked areas by market
     fig2, ax2 = plt.subplots()
     data_h = [mean_hedged_by_market[m] / 1e9 for m in MARKETS]
-    labels_h = [f"{name} (mit Hedge)" for name in ["USA", "Kanada", "EU/UK"]]
+    labels_h = [f"{name} (with hedge)" for name in ["USA", "Canada", "EU/UK"]]
     colors_h = [colors[m] for m in MARKETS]
     ax2.stackplot(years, data_h, labels=labels_h, colors=colors_h, alpha=0.8)
-    ax2.set_xlabel("Jahr")
-    ax2.set_ylabel("Jährliche CO2-Kosten (Mrd. USD)")
-    ax2.set_title(f"Erwartete jährliche CO2-Kosten mit Hedge – nach Märkten\n(Hedge-Ratio={hedge_ratio_for_plot:.1f})")
+    ax2.set_xlabel("Year")
+    ax2.set_ylabel("Annual CO2 costs (bn USD)")
+    ax2.set_title(f"Expected annual CO2 costs with hedge – by market\n(Hedge ratio={hedge_ratio_for_plot:.1f})")
     ax2.legend(loc="upper left")
     ax2.grid(True, alpha=0.3)
     fig2.tight_layout()
@@ -640,7 +646,7 @@ def make_market_timeseries_plots(hedge_ratio_for_plot: float = 0.7):
     fig2.savefig(fname2, dpi=150)
     plt.close(fig2)
 
-    print("Market-Zeitreihen-Plots gespeichert:", fname1, ",", fname2)
+    print("Market time-series plots saved:", fname1, ",", fname2)
 
 
 def make_timeseries_best_worst_plot(hedge_ratio_for_plot: float = 0.7):
@@ -649,7 +655,7 @@ def make_timeseries_best_worst_plot(hedge_ratio_for_plot: float = 0.7):
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Timeseries-Plot wurde nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("Timeseries plot was not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -687,7 +693,7 @@ def make_timeseries_best_worst_plot(hedge_ratio_for_plot: float = 0.7):
         futures_price_usd=FUTURES_PRICE_USD
     )
 
-    # Mittelwerte und Unsicherheitsbänder (P05–P95) in Mrd. USD
+    # Means and uncertainty bands (P05–P95) in bn USD
     mean_no = paths_no_unhedged.mean(axis=0) / 1e9
     mean_h = paths_hedged.mean(axis=0) / 1e9
     q05_no = np.quantile(paths_no_unhedged, 0.05, axis=0) / 1e9
@@ -698,20 +704,20 @@ def make_timeseries_best_worst_plot(hedge_ratio_for_plot: float = 0.7):
     years = YEARS
 
     fig, ax = plt.subplots()
-    # Ohne Hedge – Mittelwert + Unsicherheitsband
-    ax.plot(years, mean_no, color="tab:blue", label="Ohne Hedge – Mittelwert")
+    # Without hedge – mean + uncertainty band
+    ax.plot(years, mean_no, color="tab:blue", label="Without hedge – mean")
     ax.fill_between(years, q05_no, q95_no, color="tab:blue", alpha=0.2)
 
-    # Mit Hedge – Mittelwert + Unsicherheitsband
+    # With hedge – mean + uncertainty band
     ax.plot(
         years,
         mean_h,
         color="tab:orange",
-        label=f"Mit Hedge – Mittelwert (HR={hedge_ratio_for_plot:.1f})",
+        label=f"With hedge – mean (HR={hedge_ratio_for_plot:.1f})",
     )
     ax.fill_between(years, q05_h, q95_h, color="tab:orange", alpha=0.2)
 
-    # Ist-Punkt zum Startjahr auf der unhedged-Mittelwert-Linie
+    # Actual point for the start year on the unhedged mean line
     ist_year = years[0]
     ist_cost = mean_no[0]
     ax.scatter(
@@ -720,14 +726,14 @@ def make_timeseries_best_worst_plot(hedge_ratio_for_plot: float = 0.7):
         color="black",
         marker="o",
         zorder=5,
-        label="Ist-Kosten Startjahr (ohne Hedge)",
+        label="Actual costs start year (without hedge)",
     )
 
-    ax.set_xlabel("Jahr")
-    ax.set_ylabel("Jährliche CO2-Kosten (Mrd. USD)")
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Annual CO2 costs (bn USD)")
     ax.set_title(
-        "Entwicklung der jährlichen CO2-Kosten bis 2030\n"
-        "Mittelwert & Unsicherheitsband (P05–P95) mit/ohne Hedging"
+        "Development of annual CO2 costs through 2030\n"
+        "Mean & uncertainty band (P05–P95) with/without hedging"
     )
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -737,17 +743,17 @@ def make_timeseries_best_worst_plot(hedge_ratio_for_plot: float = 0.7):
     fig.savefig(fname, dpi=150)
     plt.close(fig)
 
-    print("Timeseries-Plot gespeichert:", fname)
+    print("Timeseries plot saved:", fname)
 
 
 def make_boxplot_costs_by_hedge_ratio():
-    """Boxplots der Gesamtkosten je Hedge-Ratio (mit Hedge-Kosten)."""
+    """Boxplots of total costs by hedge ratio (with hedged costs)."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Boxplot-Plot wurde nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("Boxplot was not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -784,9 +790,9 @@ def make_boxplot_costs_by_hedge_ratio():
 
     fig, ax = plt.subplots()
     ax.boxplot(costs_by_hr, labels=labels, showfliers=False)
-    ax.set_xlabel("Hedge-Ratio")
-    ax.set_ylabel("Gesamte CO2-Kosten 2025–2030 (Mrd. USD)")
-    ax.set_title("Verteilung der Gesamtkosten je Hedge-Ratio (Boxplots)")
+    ax.set_xlabel("Hedge ratio")
+    ax.set_ylabel("Total CO2 costs 2025–2030 (bn USD)")
+    ax.set_title("Distribution of total costs by hedge ratio (boxplots)")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
@@ -794,17 +800,17 @@ def make_boxplot_costs_by_hedge_ratio():
     fig.savefig(fname, dpi=150)
     plt.close(fig)
 
-    print("Boxplot-Plot gespeichert:", fname)
+    print("Boxplot saved:", fname)
 
 
 def make_delta_plot(sweep: pd.DataFrame):
-    """Linienplot der Deltas zu No-Hedge (Mean, P95, Std) je Hedge-Ratio."""
+    """Line plot of deltas vs. no-hedge (mean, P95, std) by hedge ratio."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Delta-Plot wurde nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("Delta plot was not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -820,14 +826,14 @@ def make_delta_plot(sweep: pd.DataFrame):
     std_delta = sweep_sorted["std_reduction"] / 1e9
 
     fig, ax = plt.subplots()
-    ax.plot(hr, mean_delta, marker="o", label="Δ Mean-Kosten (Mrd. USD)")
-    ax.plot(hr, p95_delta, marker="o", label="P95-Reduktion (Mrd. USD)")
-    ax.plot(hr, std_delta, marker="o", label="Std-Reduktion (Mrd. USD)")
+    ax.plot(hr, mean_delta, marker="o", label="Δ mean costs (bn USD)")
+    ax.plot(hr, p95_delta, marker="o", label="P95 reduction (bn USD)")
+    ax.plot(hr, std_delta, marker="o", label="Std reduction (bn USD)")
 
     ax.axhline(0, color="grey", linestyle="--", linewidth=1)
-    ax.set_xlabel("Hedge-Ratio")
-    ax.set_ylabel("Differenz zu No-Hedge (Mrd. USD)")
-    ax.set_title("Deltas vs. No-Hedge über Hedge-Ratios")
+    ax.set_xlabel("Hedge ratio")
+    ax.set_ylabel("Difference vs. no hedge (bn USD)")
+    ax.set_title("Deltas vs. no-hedge across hedge ratios")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -836,17 +842,17 @@ def make_delta_plot(sweep: pd.DataFrame):
     fig.savefig(fname, dpi=150)
     plt.close(fig)
 
-    print("Delta-Plot gespeichert:", fname)
+    print("Delta plot saved:", fname)
 
 
 def make_pnl_vs_cost_plot(hedge_ratio_for_plot: float = 0.7):
-    """Hedge-PnL (Einsparung) vs. No-Hedge-Kosten."""
+    """Hedge PnL (savings) vs. no-hedge costs."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("PnL-Plot wurde nicht erzeugt: matplotlib nicht installiert (pip install matplotlib).")
+        print("PnL plot was not generated: matplotlib not installed (pip install matplotlib).")
         return
 
     try:
@@ -878,24 +884,24 @@ def make_pnl_vs_cost_plot(hedge_ratio_for_plot: float = 0.7):
 
     no_hedge_bn = no_hedge / 1e9
     hedged_bn = hedged / 1e9
-    pnl_bn = no_hedge_bn - hedged_bn  # Einsparung durch Hedge
+    pnl_bn = no_hedge_bn - hedged_bn  # Savings from hedge
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
 
-    # Histogramm des Hedge-PnL
+    # Histogram of hedge PnL
     ax1.hist(pnl_bn, bins=60, alpha=0.6, color="tab:blue")
     ax1.axvline(0, color="grey", linestyle="--", linewidth=1)
-    ax1.set_xlabel("Hedge-PnL / Einsparung (Mrd. USD)")
-    ax1.set_ylabel("Häufigkeit")
-    ax1.set_title(f"Hedge-PnL-Verteilung (HR={hedge_ratio_for_plot:.1f})")
+    ax1.set_xlabel("Hedge PnL / savings (bn USD)")
+    ax1.set_ylabel("Frequency")
+    ax1.set_title(f"Hedge PnL distribution (HR={hedge_ratio_for_plot:.1f})")
     ax1.grid(True, alpha=0.3)
 
-    # Scatter: PnL vs. No-Hedge-Kosten
+    # Scatter: PnL vs. no-hedge costs
     ax2.scatter(no_hedge_bn, pnl_bn, alpha=0.4, s=10, color="tab:orange")
     ax2.axhline(0, color="grey", linestyle="--", linewidth=1)
-    ax2.set_xlabel("No-Hedge Gesamtkosten 2025–2030 (Mrd. USD)")
-    ax2.set_ylabel("Hedge-PnL / Einsparung (Mrd. USD)")
-    ax2.set_title("Hedge-PnL vs. No-Hedge-Kosten")
+    ax2.set_xlabel("No-hedge total costs 2025–2030 (bn USD)")
+    ax2.set_ylabel("Hedge PnL / savings (bn USD)")
+    ax2.set_title("Hedge PnL vs. no-hedge costs")
     ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -903,14 +909,14 @@ def make_pnl_vs_cost_plot(hedge_ratio_for_plot: float = 0.7):
     fig.savefig(fname, dpi=150)
     plt.close(fig)
 
-    print("PnL-Plot gespeichert:", fname)
+    print("PnL plot saved:", fname)
 
 
 # ============================================================
 # RUN
 # ============================================================
 
-# [nicht in PDF]
+# [not in PDF]
 if __name__ == "__main__":
     sweep = run_hedge_ratio_sweep()
 
@@ -933,7 +939,7 @@ if __name__ == "__main__":
         except TypeError:
             sweep.to_excel(output_path, index=False)
             excel_written = True
-            print("Hinweis: pandas-Version unterstützt decimal=',' nicht; Excel nutzt Dezimalpunkt '.'.")
+            print("Note: this pandas version does not support decimal=','; Excel will use decimal point '.'.")
 
         sweep.to_csv(output_path_csv, index=False, sep=";", decimal=",", float_format="%.2f")
 
@@ -947,8 +953,8 @@ if __name__ == "__main__":
     make_timeseries_best_worst_plot()
     make_tradeoff_plot(sweep)
     make_market_timeseries_plots()
-    make_var_plot()       # Standard: HR = 0.7
-    make_var_plot(0.5)    # Zusätzlich: HR = 0.5
+    make_var_plot()       # Default: HR = 0.7
+    make_var_plot(0.5)    # Additionally: HR = 0.5
     make_boxplot_costs_by_hedge_ratio()
     make_delta_plot(sweep)
     make_pnl_vs_cost_plot()
